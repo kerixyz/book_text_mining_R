@@ -1,0 +1,198 @@
+---
+title: "ch2_sentiment_analysis"
+output: html_document
+---
+The sentiments dataset
+```{r}
+library(tidytext)
+
+#evaluating opinion or emotion in text -> sentiment lexicons
+sentiments
+```
+There are three general-purpose lexicons
+- AFINN assigns words with a score -5 to 5, from negative to positive sentiments
+- bing categorizes words in a binary fashion into positive and negative categories
+- nrc categorizes into pos, neg, anger, anticipation, disgust, fear, joy, sadness, and surprise
+```{r}
+get_sentiments('afinn')
+```
+```{r}
+get_sentiments('bing')
+```
+```{r}
+get_sentiments('nrc')
+```
+These sentiment lexicons were constructed either via crowdsourcing or labor by the authors
+They were validated by some validation of crowdsourcing and other modern data
+These sentiments may not best apply to 200year old fiction
+```{r}
+library(janeaustenr)
+library(dplyr)
+library(stringr)
+
+tidy_books <- austen_books() %>%
+  group_by(book) %>%
+  mutate(linenumber = row_number(),
+         chapter = cumsum(str_detect(text, regex("^chapter [\\divxlc]", ignore_case = TRUE)))) %>%
+  ungroup() %>%
+  unnest_tokens(word,text) #using word matches with other datasets
+
+#taking only joy-ous words from nrc lexicon
+nrc_joy <- get_sentiments("nrc") %>%
+  filter(sentiment == "joy") 
+
+#taking all of the joy-ous words from Emma and counting(?)
+tidy_books %>%
+  filter(book == "Emma") %>%
+  inner_join(nrc_joy) %>%
+  count(word, sort = TRUE)
+
+```
+Examine how sentiment changes throughout each novel
+```{r}
+library(tidyr)
+
+#first get the sentiment score using bing and inner_join
+jane_austen_sentiment <- tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(book, index = linenumber %/% 80, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  #count positive and negative words in sections of each book 
+  mutate(sentiment = positive - negative)
+
+library(ggplot2)
+#plotting sentiment scores through the trajectory of each novel
+ggplot(jane_austen_sentiment, aes(index, sentiment, fill = book)) +
+  geom_col(show.legend = FALSE) + 
+  facet_wrap(~book, ncol = 2, scales = "free_x")
+```
+Comparing the three sentiment dictionaries
+```{r}
+pride_prejudice <- tidy_books %>%
+  filter(book == "Pride & Prejudice")
+
+pride_prejudice
+
+afinn <- pride_prejudice %>%
+  inner_join(get_sentiments("afinn")) %>% #combining pp with afinn lexicon
+  group_by(index = linenumber %/% 80) %>% #establishing sections with line numbers
+  summarise(sentiment = sum(score)) %>%
+  mutate(method = "AFINN")
+
+bing_and_nrc <- bind_rows(pride_prejudice %>%
+                            inner_join(get_sentiments("bing")) %>% #combining with bing lex
+                            mutate(method = "Bing et al."),
+                          pride_prejudice %>%
+                            inner_join(get_sentiments("nrc") %>% #combining with nrc lex
+                                         filter(sentiment %in% c("positive", "negative"))) %>%
+                            mutate(method = "NRC")) %>%
+  count(method, index = linenumber %/% 80, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative)
+
+bind_rows(afinn, bing_and_nrc) %>%
+  ggplot(aes(index, sentiment, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~method, ncol = 1, scales = "free_y")
+
+#in hindsight this could have been done in one operation, 
+#but showing it into two for understanding i guess
+```
+Understanding the differences in lexicon sentiments
+```{r}
+get_sentiments("nrc") %>%
+  filter(sentiment %in% c("positive", "negative")) %>%
+  count(sentiment)
+
+get_sentiments("bing") %>%
+  count(sentiment)
+
+#there are more negative than positive words, but neg-pos ratio in bing is > than nrc
+```
+Most common positive and negative words
+```{r}
+bing_word_counts <- tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+
+bing_word_counts
+
+bing_word_counts %>%
+  group_by(sentiment) %>%
+  top_n(10) %>%
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(y = "Contribution to sentiment", x = NULL) +
+  coord_flip()
+
+#miss is coded as negative, while it is not negative in the context of Austen's works
+```
+Customizing our own stop words 
+```{r}
+custom_stop_words <- bind_rows(data_frame(word = c("miss"), lexicon = c("custom")), stop_words)
+custom_stop_words
+```
+Wordclouds
+```{r}
+library(wordcloud)
+
+tidy_books %>%
+  anti_join(stop_words) %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 100))
+```
+sentiment analysis to tag positive and negative using inner join 
+we don't need to use comparison.cloud() yet - but we need to turn df into matrix with acast()
+```{r}
+library(reshape2)
+
+tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("gray20", "gray80"), max.words = 100)
+```
+Statement Analysis Algorithms including coreNLP, cleanNLP and sentimentr
+```{r}
+PandP_sentences <- data_frame(text = prideprejudice) %>%
+  unnest_tokens(sentence, text, token = "sentences")
+
+PandP_sentences$sentence[2]
+
+#split tokens using a regex pattern
+austen_chapters <- austen_books() %>%
+  group_by(book) %>%
+  unnest_tokens(chapter, text, token = "regex", pattern = "Chapter|CHAPTER [``dIVXLC]") %>%
+  ungroup()
+
+austen_chapters %>%
+  group_by(book) %>%
+  summarise(chapters = n())
+```
+First, let's get the list of negative words from the Bing lex
+Second, lets make df of words per chapter so we can normalize length of chapters
+Then, find the number of negative words in each chapter and divide by total words in chapter
+To figure out, which chapter has the highest proportion of negative works 
+```{r}
+#finding negative words from bing lexicon
+bingnegative <- get_sentiments("bing") %>%
+  filter(sentiment == "negative")
+#counting words per chapter
+wordcounts <- tidy_books %>%
+  group_by(book, chapter) %>%
+  summarize(words = n())
+
+tidy_books %>%
+  semi_join(bingnegative) %>%
+  group_by(book, chapter) %>%
+  summarize(negativewords = n()) %>%
+  left_join(wordcounts, by = c("book", "chapter")) %>% 
+  mutate(ratio = negativewords/words) %>%
+  filter(chapter != 0) %>%
+  top_n(1) %>%
+  ungroup()
+```
